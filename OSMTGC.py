@@ -514,12 +514,17 @@ def addOSMToTGC(course_json, geopointcloud, osm_result, x_offset=0.0, y_offset=0
     # Return the tree list for later use
     return trees
 
-def addOSMFromXML(course_json, xml_data, options_dict={}, printf=print):
+def addOSMFromXML(xml_data, printf=print):
     printf("Adding OpenStreetMap from XML")
     op = overpy.Overpass()
     result = op.parse_xml(xml_data)
-
-    printf("Determining the UTM Geo Projection for this area")
+    
+    return result
+    
+def addOSMToFlatHeightmap(course_json, xml_data, options_dict={}, printf=print):
+    result = addOSMFromXML(xml_data, printf=printf)
+    if not options_dict.get('force_osm_epsg', False):
+        printf("Determining the UTM Geo Projection for this area")
     # Find the lat and lon bounding box from the XML directly
     # Can't find the query bounds in overpy
     root = ET.fromstring(xml_data)
@@ -532,7 +537,7 @@ def addOSMFromXML(course_json, xml_data, options_dict={}, printf=print):
     
     # Create a basic geopointcloud to handle this projection
     pc = GeoPointCloud()
-    pc.addFromLatLon((latmin, lonmin), (latmax, lonmax), printf=printf)
+    pc.addFromLatLon((latmin, lonmin), (latmax, lonmax), options_dict.get('force_osm_epsg', False), printf=printf)
 
     trees = addOSMToTGC(course_json, pc, result, x_offset=float(options_dict.get('adjust_ew', 0.0)), y_offset=float(options_dict.get('adjust_ns', 0.0)), \
                 options_dict=options_dict, printf=printf)

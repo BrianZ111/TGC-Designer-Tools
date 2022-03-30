@@ -319,23 +319,24 @@ class GeoPointCloud:
         self.removeBias()
         self.resetProperties()
 
-    def addFromLatLon(self, lower_left_latlon, upper_right_latlon, printf=print):
+    def addFromLatLon(self, lower_left_latlon, upper_right_latlon, epsg, printf=print):
         # Import here to avoid circular import
         import usgs_lidar_parser
-        center = ((lower_left_latlon[0]+upper_right_latlon[1])/2.0, (lower_left_latlon[1]+upper_right_latlon[1])/2.0)
-        epsg = usgs_lidar_parser.convert_latlon_to_utm_espg(center[0], center[1])
-        printf("For center coordinates: " + str(center) + ":")
+        if not epsg:
+            center = ((lower_left_latlon[0]+upper_right_latlon[1])/2.0, (lower_left_latlon[1]+upper_right_latlon[1])/2.0)
+            epsg = usgs_lidar_parser.convert_latlon_to_utm_espg(center[0], center[1])
+            printf("For center coordinates: " + str(center) + ":")
 
         self._proj, unit = usgs_lidar_parser.proj_from_epsg(epsg, printf=printf)
-        utm_origin = self.latlonToProj(lower_left_latlon[0], lower_left_latlon[1])
-        self._origin = utm_origin
+        proj_origin = self.latlonToProj(lower_left_latlon[0], lower_left_latlon[1])
+        self._origin = proj_origin
 
-        upper_right_utm = self.latlonToProj(upper_right_latlon[0], upper_right_latlon[1])
+        upper_right_proj = self.latlonToProj(upper_right_latlon[0], upper_right_latlon[1])
         self._xmin = 0.0
-        self._xmax = upper_right_utm[0] - utm_origin[0]
+        self._xmax = upper_right_proj[0] - proj_origin[0]
         self._width = self._xmax
         self._ymin = 0.0
-        self._ymax = upper_right_utm[1] - utm_origin[1]
+        self._ymax = upper_right_proj[1] - proj_origin[1]
         self._height = self._ymax
         self._zmin = 0.0
         self._zmax = 0.0

@@ -224,12 +224,20 @@ def request_course_outline(course_image, sat_image=None, bundle=None, printf=pri
         sat_canvas.image = sat_img
         sat_canvas.grid(row=0, column=preview_size[0]+10, sticky='e')
 
+    determinPreviewSize(input_size, im.size)
+    
+    # Draw from file (currently hardcoded)
+    drawFile(bundle[0], bundle[2], im.size)
+    
+    # Save file (currently a printout)
+    saveDraw(bundle[0], bundle[2], printf)
+
     createCanvasBinding()
 
     popup.mainloop()
 
 
-def generate_lidar_previews(lidar_dir_path, sample_scale, output_dir_path, force_epsg=None, force_unit=None, printf=print):
+def generate_lidar_previews(lidar_dir_path, sample_scale, output_dir_path, osm_file, force_epsg=None, force_unit=None, printf=print):
     # Create directory for intermediate files
     tgc_tools.create_directory(output_dir_path)
 
@@ -280,8 +288,17 @@ def generate_lidar_previews(lidar_dir_path, sample_scale, output_dir_path, force
     lower_right_enu = pc.lrENU()
     upper_left_latlon = pc.enuToLatLon(*upper_left_enu)
     lower_right_latlon = pc.enuToLatLon(*lower_right_enu)
-    # Order is South, West, North, East
-    result = OSMTGC.getOSMData(lower_right_latlon[0], upper_left_latlon[1], upper_left_latlon[0], lower_right_latlon[1], printf=printf)
+    if osm_file is None:
+        # Order is South, West, North, East
+        result = OSMTGC.getOSMData(lower_right_latlon[0], upper_left_latlon[1], upper_left_latlon[0], lower_right_latlon[1], printf=printf)
+    else:
+        with open(osm_file, encoding="utf8") as f:
+            xml_data = f.read()
+            printf("Loading OpenStreetMap Data from " + str(osm_file))
+        try:
+            result = OSMTGC.addOSMFromXML(xml_data, printf=printf)
+        except:
+            result = None
     if result:
         im = OSMTGC.addOSMToImage(result.ways, im, pc, sample_scale, printf=printf)
     else:

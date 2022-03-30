@@ -110,7 +110,7 @@ def get_trees(theme, tree_variety, trees):
             output.append(g)
     return output
 
-def get_lidar_trees(theme, tree_variety, lidar_trees, pc, mask, mask_pc, image_scale):
+def get_lidar_trees(theme, tree_variety, lidar_trees, background_trees, pc, mask, mask_pc, image_scale):
     # Convert to TGC coordinates
     trees = []
     for tree in lidar_trees:
@@ -119,7 +119,7 @@ def get_lidar_trees(theme, tree_variety, lidar_trees, pc, mask, mask_pc, image_s
         row, column = mask_pc.projToCV2(easting, northing, image_scale)
         mask_color = mask[(row, column)]
         # Color order is BGR, support both MS Paint Red Colors
-        if not (mask_color[0] < 40 and mask_color[1] < 40 and mask_color[2] > 130):
+        if background_trees or not (mask_color[0] < 40 and mask_color[1] < 40 and mask_color[2] > 130):
             # Use standard pointcloud tp project trees into final TGC coordinates
             x, y, z = pc.projToTGC(easting, northing, 0.0)
             trees.append((x, z, r, h))
@@ -171,118 +171,140 @@ def set_constants(course_json, flatten_fairways=False, flatten_greens=False, cou
 
     return course_json
 
-def generate_course(course_json, heightmap_dir_path, options_dict={}, printf=print):
-    printf("Loading data from " + heightmap_dir_path)
+def generate_course(course_json, heightmap_dir_path, osm_file, options_dict={}, printf=print): 
+    global alignment_pc
+    # Handle Heightmap if checked
+    if (options_dict.get('use_heightmap', False) and heightmap_dir_path):
+        printf("Loading data from " + heightmap_dir_path)
 
-    # Infill data to prevent holes and make the data nice and smooth
-    hm_file = Path(heightmap_dir_path) / '/heightmap.npy'
-    try:
-        read_dictionary = np.load(heightmap_dir_path + '/heightmap.npy').item()
-        im = read_dictionary['heightmap'].astype('float32')
+        # Infill data to prevent holes and make the data nice and smooth
+        hm_file = Path(heightmap_dir_path) / '/heightmap.npy'
+        try:
+            read_dictionary = np.load(heightmap_dir_path + '/heightmap.npy').item()
+            im = read_dictionary['heightmap'].astype('float32')
 
-        mask = cv2.imread(heightmap_dir_path + '/mask.png', cv2.IMREAD_COLOR)
-        # Turn mask into matrix order from image order
-        mask = np.flip(mask, 0)
+            mask = cv2.imread(heightmap_dir_path + '/mask.png', cv2.IMREAD_COLOR)
+            # Turn mask into matrix order from image order
+            mask = np.flip(mask, 0)
 
-        # Process Image
-        printf("Filling holes in heightmap")
-        image_scale = read_dictionary['image_scale']
-        printf("Map scale is: " + str(image_scale) + " meters")
-        background_ratio = None
-        if options_dict.get('add_background', False):
-            background_scale = float(options_dict.get('background_scale', 16.0))
-            background_ratio = background_scale/image_scale
-            printf("Background requested with scale: " + str(background_scale) + " meters")
-            
-        heightmap, background, holeMask = infill_image_scipy(im, mask, background_ratio=background_ratio, fill_water=options_dict.get('fill_water', False), purge_water=options_dict.get('purge_water', False), printf=printf)
-    except FileNotFoundError:
-        printf("Could not find heightmap or mask at: " + heightmap_dir_path)
-        return course_json
+            # Process Image
+            printf("Filling holes in heightmap")
+            image_scale = read_dictionary['image_scale']
+            printf("Map scale is: " + str(image_scale) + " meters")
+            background_ratio = None
+            if options_dict.get('add_background', False):
+                background_scale = float(options_dict.get('background_scale', 16.0))
+                background_ratio = background_scale/image_scale
+                printf("Background requested with scale: " + str(background_scale) + " meters")
 
-    # Clear existing terrain
-    course_json = set_constants(course_json, options_dict.get('flatten_fairways', False), options_dict.get('flatten_greens', False), read_dictionary['origin'][0], printf=printf)
-    course_json["userLayers"]["height"] = []
-    course_json["userLayers"]["terrainHeight"] = []
-    course_json["placedObjects2"] = []
+            heightmap, background, holeMask = infill_image_scipy(im, mask, background_ratio=background_ratio, fill_water=options_dict.get('fill_water', False), purge_water=options_dict.get('purge_water', False), printf=printf)
+        except FileNotFoundError:
+            printf("Could not find heightmap or mask at: " + heightmap_dir_path)
+            return course_json
 
-    # Construct high resolution model
-    pc = GeoPointCloud()
-    pc.addFromImage(heightmap, image_scale, read_dictionary['origin'], read_dictionary['projection'])
+        # Clear existing terrain
+        course_json = set_constants(course_json, options_dict.get('flatten_fairways', False), options_dict.get('flatten_greens', False), read_dictionary['origin'][0], printf=printf)
+        course_json["userLayers"]["height"] = []
+        course_json["userLayers"]["terrainHeight"] = []
+        course_json["placedObjects2"] = []
 
-    # Add low resolution background
-    if background is not None:
-        background_pc = GeoPointCloud()
-        background_pc.addFromImage(background, background_scale, read_dictionary['origin'], read_dictionary['projection'])
-        num_points = len(background_pc.points())
+        # Construct high resolution model
+        pc = GeoPointCloud()
+        pc.addFromImage(heightmap, image_scale, read_dictionary['origin'], read_dictionary['projection'])
+        alignment_pc = pc
+        # Add low resolution background
+        if background is not None:
+            background_pc = GeoPointCloud()
+            background_pc.addFromImage(background, background_scale, read_dictionary['origin'], read_dictionary['projection'])
+            num_points = len(background_pc.points())
+            last_print_time = time.time()
+
+            for n, i in enumerate(background_pc.points()):
+                if time.time() > last_print_time + status_print_duration:
+                    last_print_time = time.time()
+                    printf(str(round(100.0*float(n) / num_points, 2)) + "% through heightmap")
+
+                #OLD CODE Convert to projected coordinates, then project to TGC using the high resolution pointcloud to ensure alignment
+                #OLD CODE easting, northing = background_pc.enuToProj(i[0], i[1])
+                #OLD CODE x, y, z = pc.projToTGC(easting, northing, 0.0)
+                x, y, z = background_pc.enuToTGC(i[0], i[1], 0.0) # Don't transform y, it's inverted from elevation
+                # Using 10 - the very soft circles means we need to scale 2.5x more to fill and smooth the terrain
+                course_json["userLayers"]["height"].append(get_pixel(x, z, i[2], 2.5*background_scale, brush_type=10))
+                alignment_pc = background_pc
+
+        # Convert the pointcloud into height elements
+        num_points = len(pc.points())
         last_print_time = time.time()
-
-        for n, i in enumerate(background_pc.points()):
+        for n, i in enumerate(pc.points()):
             if time.time() > last_print_time + status_print_duration:
                 last_print_time = time.time()
                 printf(str(round(100.0*float(n) / num_points, 2)) + "% through heightmap")
-
-            # Convert to projected coordinates, then project to TGC using the high resolution pointcloud to ensure alignment
-            easting, northing = background_pc.enuToProj(i[0], i[1])
-            x, y, z = pc.projToTGC(easting, northing, 0.0)
-            # Using 10 - the very soft circles means we need to scale 2.5x more to fill and smooth the terrain
-            course_json["userLayers"]["height"].append(get_pixel(x, z, i[2], 2.5*background_scale, brush_type=10))
-
-    # Convert the pointcloud into height elements
-    num_points = len(pc.points())
-    last_print_time = time.time()
-    for n, i in enumerate(pc.points()):
-        if time.time() > last_print_time + status_print_duration:
-            last_print_time = time.time()
-            printf(str(round(100.0*float(n) / num_points, 2)) + "% through heightmap")
-
-        x, y, z = pc.enuToTGC(i[0], i[1], 0.0) # Don't transform y, it's inverted from elevation
-        course_json["userLayers"]["height"].append(get_pixel(x, z, i[2], image_scale))
-
-    if options_dict.get('lidar_trees', False) and len(read_dictionary.get('trees', [])) > 0:
-        printf("Adding trees from lidar data")
-        # Need separate mask geopointcloud because pc is cropped
-        mask_pc = GeoPointCloud()
-        mask_pc.addFromImage(im, image_scale, read_dictionary['origin'], read_dictionary['projection'])
-        for o in get_lidar_trees(course_json['theme'], options_dict.get('tree_variety', False), read_dictionary['trees'], pc, mask, mask_pc, image_scale):
-            course_json["placedObjects2"].append(o)
-
-    # Download OpenStreetMaps Data for this smaller area
-    if options_dict.get('use_osm', True):
-        printf("Adding golf features to lidar data")
-
-        # Get spline configuration file, if present
-        spline_json = tgc_tools.get_spline_configuration_json(heightmap_dir_path)
-
-        # Use this data to create playable courses automatically
-        upper_left_enu = pc.ulENU()
-        lower_right_enu = pc.lrENU()
-        upper_left_latlon = pc.enuToLatLon(*upper_left_enu)
-        lower_right_latlon = pc.enuToLatLon(*lower_right_enu)
-        # Order is South, West, North, East
-        result = OSMTGC.getOSMData(lower_right_latlon[0], upper_left_latlon[1], upper_left_latlon[0], lower_right_latlon[1], printf=printf)
-        osm_trees = OSMTGC.addOSMToTGC(course_json, pc, result, x_offset=float(options_dict.get('adjust_ew', 0.0)), y_offset=float(options_dict.get('adjust_ns', 0.0)), \
-                                                         options_dict=options_dict, spline_configuration_json=spline_json, printf=printf)
-
-        if len(osm_trees) > 0:
-            printf("Adding trees from OpenStreetMap")
-            for o in get_trees(course_json['theme'], options_dict.get('tree_variety', False), osm_trees):
+            if background is not None:
+                # Convert to projected coordinates, then project to TGC using the background pointcloud to ensure alignment
+                easting, northing = pc.enuToProj(i[0], i[1])
+                x, y, z = background_pc.projToTGC(easting, northing, 0.0)
+            else:
+                x, y, z = pc.enuToTGC(i[0], i[1], 0.0) # Don't transform y, it's inverted from elevation
+            course_json["userLayers"]["height"].append(get_pixel(x, z, i[2], image_scale))
+        if options_dict.get('lidar_trees', False) and len(read_dictionary.get('trees', [])) > 0:
+            printf("Adding trees from lidar data")
+            # Need separate mask geopointcloud because pc is cropped
+            mask_pc = GeoPointCloud()
+            mask_pc.addFromImage(im, image_scale, read_dictionary['origin'], read_dictionary['projection'])
+            for o in get_lidar_trees(course_json['theme'], options_dict.get('tree_variety', False), read_dictionary['trees'], options_dict.get('background_trees', False), alignment_pc, mask, mask_pc, image_scale):
                 course_json["placedObjects2"].append(o)
+        
+        # Automatically adjust course elevation
+        printf("Moving course to lowest valid elevation")
+        course_json = tgc_tools.elevate_terrain(course_json, None, printf=printf)
 
-    # Automatically adjust course elevation
-    printf("Moving course to lowest valid elevation")
-    course_json = tgc_tools.elevate_terrain(course_json, None, printf=printf)
+    # Handle OSM Data if checked      
+    if options_dict.get('use_osm', False):
+        # Download OpenStreetMaps Data for this smaller area
+        if options_dict.get('osm_source', False) == 'server':
+            if options_dict.get('use_osm', True):
+                printf("Adding golf features to lidar data")
+
+                # Get spline configuration file, if present
+                spline_json = tgc_tools.get_spline_configuration_json(heightmap_dir_path)
+
+                # Use this data to create playable courses automatically
+                upper_left_enu = alignment_pc.ulENU()
+                lower_right_enu = alignment_pc.lrENU()
+                upper_left_latlon = alignment_pc.enuToLatLon(*upper_left_enu)
+                lower_right_latlon = alignment_pc.enuToLatLon(*lower_right_enu)
+                # Order is South, West, North, East
+                result = OSMTGC.getOSMData(lower_right_latlon[0], upper_left_latlon[1], upper_left_latlon[0], lower_right_latlon[1], printf=printf)
+                osm_trees = OSMTGC.addOSMToTGC(course_json, alignment_pc, result, x_offset=float(options_dict.get('adjust_ew', 0.0)), y_offset=float(options_dict.get('adjust_ns', 0.0)), \
+                                                             options_dict=options_dict, spline_configuration_json=spline_json, printf=printf)
+
+                if len(osm_trees) > 0:
+                    printf("Adding trees from OpenStreetMap")
+                    for o in get_trees(course_json['theme'], options_dict.get('tree_variety', False), osm_trees):
+                        course_json["placedObjects2"].append(o)
+        # Parse OpenStreetMaps Data from file
+        elif (options_dict.get('osm_source', False) == 'file' and osm_file):
+            with open(osm_file, encoding="utf8") as f:
+                xml_data = f.read()
+                printf("Loading OpenStreetMap Data from " + str(osm_file))
+                try:
+                    result = OSMTGC.addOSMFromXML(xml_data, printf=printf)
+                    trees = OSMTGC.addOSMToTGC(course_json, alignment_pc, result, x_offset=float(options_dict.get('adjust_ew', 0.0)), y_offset=float(options_dict.get('adjust_ns', 0.0)), \
+                options_dict=options_dict, printf=printf)
+                except:
+                    course_json = generate_flat_course(course_json, xml_data, options_dict=options_dict, printf=printf)
 
     printf("Course Description Complete")
+    
 
     return course_json
 
 def generate_flat_course(course_json, xml_data, options_dict={}, printf=print):
-    course_json, osm_trees = OSMTGC.addOSMFromXML(course_json, xml_data, options_dict=options_dict, printf=printf)
+    course_json, osm_trees = OSMTGC.addOSMToFlatHeightmap(course_json, xml_data, options_dict=options_dict, printf=printf)
     if len(osm_trees) > 0:
         printf("Adding trees from OpenStreetMap")
         for o in get_trees(course_json['theme'], options_dict.get('tree_variety', False), osm_trees):
             course_json["placedObjects2"].append(o)
-
     return course_json
 
 if __name__ == "__main__":

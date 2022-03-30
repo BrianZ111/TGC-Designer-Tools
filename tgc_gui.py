@@ -516,13 +516,27 @@ def runLidar(scale_entry, epsg_entry, printf):
         alert("No action taken: Could not get valid force epsg from entry")
         return
 
+    # There may be many options for this in the future (which splines to add, clear splines?, flatten fairways/greens, etc) so store efficiently
+    lidar_tab_options_dict = {}
+    
+    # Snapshot the current values of the entries dictionary into the options_dict
+    # We are reusing the same keys, so try not to change them often
+    # All values in the entries_dict must support the get() function
+    for key, entry in lidar_tab_options_entries_dict.items():
+        lidar_tab_options_dict[key] = entry.get()    
+    
     lidar_dir_path = tk.filedialog.askdirectory(initialdir=root.filename, title="Select las/laz files directory")
+    if lidar_tab_options_dict.get('osm_source', False) == 'file':
+        osm_file = tk.filedialog.askopenfilename(title='Select your OpenStreetMap Export', defaultextension='osm', initialdir=root.filename, filetypes=osm_types)
+    else:
+        osm_file = None
     if lidar_dir_path:
-        lidar_map_api.generate_lidar_previews(lidar_dir_path, sample_scale, root.filename, force_epsg=force_epsg, printf=printf)
+        lidar_map_api.generate_lidar_previews(lidar_dir_path, sample_scale, root.filename, osm_file, force_epsg=force_epsg, printf=printf)
 
 def generateCourseFromLidar(options_entries_dict, printf):
     global root
     global course_json
+    global alignment_pc
 
     if not root or not hasattr(root, 'filename'):
         alert("Select a course directory before processing heightmap file")
@@ -541,47 +555,35 @@ def generateCourseFromLidar(options_entries_dict, printf):
     for key, entry in options_entries_dict.items():
         options_dict[key] = entry.get()
 
-    heightmap_dir_path = tk.filedialog.askdirectory(initialdir=root.filename, title="Select heightmap and mask files directory")
-    if heightmap_dir_path:
-        drawPlaceholder()
-        course_json = tgc_image_terrain.generate_course(course_json, heightmap_dir_path, options_dict=options_dict, printf=printf)
-        drawCourse(course_json)
-        printf("Done Rendering Course Preview")
+    try: alignment_pc
+    except NameError:
+        #print((options_dict.get('use_osm', False))
+        #print((options_dict.get('use_osm', False) and (not options_dict.get('use_heightmap', False))))
+        if options_dict.get('use_osm', False) and not options_dict.get('use_heightmap', False):
+            if options_dict.get('osm_source', False) == 'server':
+                alert("Importing a heightmap is required to get coordinates for OSM server data")
+            if options_dict.get('osm_source', False) == 'file':
+                osm_only = tk.messagebox.askokcancel(title="OSM Only?", message="No heightmap loaded.  Import OSM features only?")
+                if not osm_only:
+                    return
+    
+    if options_dict.get('use_heightmap', False):
+        heightmap_dir_path = tk.filedialog.askdirectory(initialdir=root.filename, title="Select heightmap and mask files directory")
+    else: heightmap_dir_path = False
+    if (options_dict.get('use_osm', False) and options_dict.get('osm_source', False) == 'file'):
+        osm_file = tk.filedialog.askopenfilename(title='Select your OpenStreetMap Export', defaultextension='osm', initialdir=root.filename, filetypes=osm_types)
+    else: osm_file = False 
+           
+    drawPlaceholder()
+    course_json = tgc_image_terrain.generate_course(course_json, heightmap_dir_path, osm_file, options_dict=options_dict, printf=printf)
+    drawCourse(course_json)
+    
+    printf("Done Rendering Course Preview")
 
 osm_types = [
     ('Open Street Map Exports', '*.osm'), 
     ('All files', '*'), 
 ]
-def importOSMFile(options_entries_dict, printf):
-    global root
-    global course_json
-
-    if not root or not hasattr(root, 'filename'):
-        alert("Select a course directory before importing OSM Flat Course")
-        return
-
-    if course_json is None:
-        alert("Make sure to import a .course file")
-        return
-
-    # There may be many options for this in the future (which splines to add, clear splines?, flatten fairways/greens, etc) so store efficiently
-    options_dict = {}
-
-    # Snapshot the current values of the entries dictionary into the options_dict
-    # We are reusing the same keys, so try not to change them often
-    # All values in the entries_dict must support the get() function
-    for key, entry in options_entries_dict.items():
-        options_dict[key] = entry.get()
-
-    osm_file = tk.filedialog.askopenfilename(title='Select your OpenStreetMap Export', defaultextension='osm', initialdir=root.filename, filetypes=osm_types)
-    if osm_file:
-        with open(osm_file, encoding="utf8") as f:
-            xml_data = f.read()
-            printf("Loading OpenStreetMap Data from " + str(osm_file))
-            drawPlaceholder()
-            course_json = tgc_image_terrain.generate_flat_course(course_json, xml_data, options_dict=options_dict, printf=printf)
-            drawCourse(course_json)
-            printf("Done Rendering Course Preview")
 
 root = tk.Tk()
 root.geometry("800x600")
@@ -626,6 +628,8 @@ canvas.place(x=0,y=0)
 bg_color = "darkgrey"
 tool_bg = "grey25"
 text_fg = "grey90"
+check_fg = "black" # Check fg can't be light or near white or it is invisible in the checkbox
+check_bg = "grey80"
 
 tool_buttons_frame = Frame(tools, bg=bg_color)
 tool_buttons_frame.pack(side=LEFT, fill=BOTH, expand=1)
@@ -710,11 +714,18 @@ canvas_image = canvas.create_image(0,0,image=default_im,anchor=tk.NW)
 root.update()
 
 ## Lidar Tab
+
+lidar_tab_options_entries_dict = {} # Store the lidar processing options into one dictionary
+
 lidarConsoleOutput = tk.scrolledtext.ScrolledText(master=lidar, wrap=tk.WORD, width=20, height=10, state=DISABLED)
 lidarPrintf = partial(tkinterPrintFunction, lidar, lidarConsoleOutput)
 
 lidarControlFrame = Frame(lidar, bg=tool_bg)
 
+lidar_tab_options_entries_dict["osm_source"] = tk.StringVar()
+osmServerProcess = Radiobutton(lidarControlFrame, text="OSM Server", variable=lidar_tab_options_entries_dict["osm_source"], value='server', fg=check_fg, bg="grey60")
+osmServerProcess.select()
+osmFileProcess = Radiobutton(lidarControlFrame, text="OSM File", variable=lidar_tab_options_entries_dict["osm_source"], value='file', fg=check_fg, bg="grey60")
 scale_label = Label(lidarControlFrame, text="Map Scale", fg=text_fg, bg=tool_bg)
 scale_entry = tk.Entry(lidarControlFrame, width=8, justify='center')
 scale_entry.insert(END, 2.0)
@@ -727,6 +738,8 @@ scale_label.pack(side=LEFT, padx=5)
 scale_entry.pack(side=LEFT, padx=5)
 epsg_label.pack(side=LEFT, padx=5)
 epsg_entry.pack(side=LEFT, padx=5)
+osmServerProcess.pack(side=LEFT, padx=5)
+osmFileProcess.pack(side=LEFT, padx=5)
 lidarbutton.pack(side=LEFT, padx=5, pady=5)
 
 lidarControlFrame.pack(pady=5)
@@ -741,8 +754,6 @@ courseControlFrame = Frame(course, bg=bg_color)
 options_entries_dict = {} # Store the many entries into one dictionary
 
 # OpenStreetMap Options
-check_fg = "black" # Check fg can't be light or near white or it is invisible in the checkbox
-check_bg = "grey80"
 osmControlFrame = Frame(courseControlFrame, bg=tool_bg)
 osmSubFrame = Frame(osmControlFrame, bg=check_bg) # Can disable all OSM Options easily inside of this
 
@@ -751,16 +762,14 @@ useOSMCheck = Checkbutton(osmControlFrame, text="Import OpenStreetMap", variable
 useOSMCheck['command'] = partial(disableAllChildren, options_entries_dict["use_osm"], osmSubFrame)
 useOSMCheck.select() # Default to Checked
 
-Label(osmSubFrame, text="Fine Shift West->East", fg=check_fg, bg=check_bg).grid(row=0, sticky=W, padx=5)
-Label(osmSubFrame, text="Fine Shift South->North", fg=check_fg, bg=check_bg).grid(row=1, sticky=W, padx=5)
-osmew = tk.Entry(osmSubFrame, width=10, justify='center')
-osmew.insert(END, '0.0')
-options_entries_dict["adjust_ew"] = osmew
-osmns = tk.Entry(osmSubFrame, width=10, justify='center')
-osmns.insert(END, '0.0')
-options_entries_dict["adjust_ns"] = osmns
-
+options_entries_dict["osm_source"] = tk.StringVar()
+osmServer = Radiobutton(osmSubFrame, text="OSM Server", variable=options_entries_dict["osm_source"], value='server', fg=check_fg, bg=check_bg)
+osmServer.select()
+osmFile = Radiobutton(osmSubFrame, text="OSM File", variable=options_entries_dict["osm_source"], value='file', fg=check_fg, bg=check_bg)
 options_entries_dict["bunker"] = tk.BooleanVar()
+osm_epsg = tk.Entry(osmSubFrame, width=10, justify='center')
+options_entries_dict["force_osm_epsg"] = osm_epsg
+osm_epsg.insert(END, "")
 bunkerCheck = Checkbutton(osmSubFrame, text="Import Bunkers", variable=options_entries_dict["bunker"], fg=check_fg, bg=check_bg)
 bunkerCheck.select()
 options_entries_dict["green"] = tk.BooleanVar()
@@ -798,10 +807,20 @@ buildingCheck.select()
 options_entries_dict["tree"] = tk.BooleanVar()
 treeCheck = Checkbutton(osmSubFrame, text="Import Mapped Woods/Trees", variable=options_entries_dict["tree"], fg=check_fg, bg=check_bg)
 treeCheck.deselect()
-osmbutton = Button(osmSubFrame, text="Make Flat Course From OSM File", command=partial(importOSMFile, options_entries_dict, coursePrintf))
 
-osmew.grid(row=0, column=1, padx=5)
-osmns.grid(row=1, column=1, padx=5)
+Label(osmSubFrame, text="Fine Shift West->East", fg=check_fg, bg=check_bg).grid(row=15, sticky=W, padx=5)
+Label(osmSubFrame, text="Fine Shift South->North", fg=check_fg, bg=check_bg).grid(row=16, sticky=W, padx=5)
+osmew = tk.Entry(osmSubFrame, width=10, justify='center')
+osmew.insert(END, '0.0')
+options_entries_dict["adjust_ew"] = osmew
+osmns = tk.Entry(osmSubFrame, width=10, justify='center')
+osmns.insert(END, '0.0')
+options_entries_dict["adjust_ns"] = osmns
+
+osmServer.grid(row=0, column=0, sticky=W, padx=5)
+osmFile.grid(row=1, column=0, sticky=W, padx=5)
+Label(osmSubFrame, text="OSM Only EPSG", fg=check_fg, bg=check_bg).grid(row=0, column=1, sticky=W, padx=5)
+osm_epsg.grid(row=1, column=1, padx=5)
 bunkerCheck.grid(row=2, columnspan=2, sticky=W, padx=5)
 greenCheck.grid(row=3, columnspan=2, sticky=W, padx=5)
 fairwayCheck.grid(row=4, columnspan=2, sticky=W, padx=5)
@@ -816,12 +835,14 @@ Label(osmSubFrame, text="Match Hole Names", fg=check_fg, bg=check_bg).grid(row=1
 osm_hole_filter.grid(row=12, column=1, padx=5)
 buildingCheck.grid(row=13, columnspan=2, sticky=W, padx=5)
 treeCheck.grid(row=14, columnspan=2, sticky=W, padx=5)
-osmbutton.grid(row=15, columnspan=2)
+osmew.grid(row=15, column=1, padx=5)
+osmns.grid(row=16, column=1, padx=5)
+
 
 useOSMCheck.pack(padx=10, pady=10)
 osmSubFrame.pack(padx=5, pady=5)
 
-coursebutton = Button(courseControlFrame, text="Select and Import Heightmap and OSM into Course", command=partial(generateCourseFromLidar, options_entries_dict, coursePrintf))
+coursebutton = Button(courseControlFrame, text="Select and Import Heightmap and/or OSM into Course", command=partial(generateCourseFromLidar, options_entries_dict, coursePrintf))
 
 # Pack the controls frames, button at the top followed by the options
 coursebutton.pack(padx=10, pady=10)
@@ -830,7 +851,10 @@ coursebutton.pack(padx=10, pady=10)
 courseOptionsFrame = Frame(courseControlFrame, bg=tool_bg)
 courseSubFrame = Frame(courseOptionsFrame, bg=check_bg) # Not needed for anything here, but I like the look
 
-Label(courseOptionsFrame, text='Course Options', fg=text_fg, bg=tool_bg).pack(pady=(15,10))
+options_entries_dict["use_heightmap"] = tk.BooleanVar()
+useHeightmapCheck = Checkbutton(courseOptionsFrame, text="Import Heightmap", variable=options_entries_dict["use_heightmap"], fg=check_fg, bg="grey60")
+useHeightmapCheck['command'] = partial(disableAllChildren, options_entries_dict["use_heightmap"], courseSubFrame)
+useHeightmapCheck.select() # Default to Checked
 
 options_entries_dict["add_background"] = tk.BooleanVar()
 backgroundCheck = Checkbutton(courseSubFrame, text="Add Background Terrain/Remove Cliffs", variable=options_entries_dict["add_background"], fg=check_fg, bg=check_bg)
@@ -842,6 +866,10 @@ backgroundCheck['command'] = partial(disableAllChildren, options_entries_dict["a
 options_entries_dict["lidar_trees"] = tk.BooleanVar()
 lidarTreeCheck = Checkbutton(courseSubFrame, text="Add Trees From Lidar (Experimental)", variable=options_entries_dict["lidar_trees"], fg=check_fg, bg=check_bg)
 lidarTreeCheck.deselect()
+options_entries_dict["background_trees"] = tk.BooleanVar()
+backgroundTreeCheck = Checkbutton(courseSubFrame, text="Add Lidar Trees to Background Terrain", variable=options_entries_dict["background_trees"], fg=check_fg, bg=check_bg, state=DISABLED)
+backgroundTreeCheck.deselect()
+lidarTreeCheck['command'] = partial(disableAllChildren, options_entries_dict["lidar_trees"], backgroundTreeCheck)
 options_entries_dict["tree_variety"] = tk.BooleanVar()
 treeVarietyCheck = Checkbutton(courseSubFrame, text="Tree Variety (Lidar and OSM)", variable=options_entries_dict["tree_variety"], fg=check_fg, bg=check_bg)
 treeVarietyCheck.deselect()
@@ -853,14 +881,16 @@ purgeWaterCheck = Checkbutton(courseSubFrame, text="Remove All Terrain Under Blu
 purgeWaterCheck.deselect()
 
 # Pack the osmControlFrame
+useHeightmapCheck.pack(padx=10, pady=10)
 courseSubFrame.pack(padx=5, pady=5, fill=X, expand=True)
 backgroundCheck.grid(row=0, columnspan=2, sticky=W, padx=5)
 Label(courseSubFrame, text="Background Scale", fg=check_fg, bg=check_bg).grid(row=1, column=0, sticky=W, padx=5)
 bgentry.grid(row=1, column=1, sticky=W, padx=5)
 lidarTreeCheck.grid(row=2, columnspan=2, sticky=W, padx=5)
-treeVarietyCheck.grid(row=3, columnspan=2, sticky=W, padx=5)
-fillWaterCheck.grid(row=4, columnspan=2, sticky=W, padx=5)
-purgeWaterCheck.grid(row=5, columnspan=2, sticky=W, padx=5)
+backgroundTreeCheck.grid(row=3, columnspan=2, sticky=W, padx=5)
+treeVarietyCheck.grid(row=4, columnspan=2, sticky=W, padx=5)
+fillWaterCheck.grid(row=5, columnspan=2, sticky=W, padx=5)
+purgeWaterCheck.grid(row=6, columnspan=2, sticky=W, padx=5)
 
 # Pack the two option frames side by side
 osmControlFrame.pack(side=LEFT, anchor=N, padx=5)
