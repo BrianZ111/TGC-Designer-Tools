@@ -132,14 +132,9 @@ def stopRect(event):
     canvas.coords(rectid, rectx0, recty0,
                   rectx1, recty1)
 
-
-def closeWindow(main, bundle, input_size, canvas_size, printf):
-    global lower_x
-    global lower_y
-    global upper_x
-    global upper_y
-    main.destroy()
-
+def determinPreviewSize(input_size, canvas_size):
+    global width_ratio
+    global height_ratio
     # TODO im.thumbnail may return the actual image size and not the resized size, investigate  
     # Need to determine the preview size
     max_canvas_dimension = max([canvas_size[0], canvas_size[1]]) # Probably the same value
@@ -153,6 +148,47 @@ def closeWindow(main, bundle, input_size, canvas_size, printf):
 
     width_ratio = float(input_size[0])/float(canvas_width)
     height_ratio = float(input_size[1])/float(canvas_height)
+    
+def drawFile(pc, sample_scale, canvas_size):
+    global lower_x
+    global lower_y
+    global upper_x
+    global upper_y
+    global canvas
+    global rectx0
+    global rectx1
+    global recty0
+    global recty1
+    global rect
+    
+    # Temp hardcoded coordinates 
+    lower_lat = 33.43225364
+    lower_lon = -111.85608713
+    upper_lat = 33.45027531
+    upper_lon = -111.83456145
+    
+    lower_y, lower_x = pc.latlonToCV2(lower_lat, lower_lon, sample_scale)
+    upper_y, upper_x = pc.latlonToCV2(upper_lat, upper_lon, sample_scale)
+    
+    rectx0 = int(lower_x/width_ratio)
+    rectx1 = int(upper_x/width_ratio)
+    
+    recty0 = canvas_size[1] - lower_y / height_ratio
+    recty1 = canvas_size[1] - upper_y / height_ratio
+    
+    rect = canvas.create_rectangle(
+        rectx0, recty0, rectx1, recty1, outline="#ff0000")
+    
+def saveDraw(pc, sample_scale, printf):
+    printf(str(pc.cv2ToLatLon(lower_y, lower_x, sample_scale)))
+    printf(str(pc.cv2ToLatLon(upper_y, upper_x, sample_scale)))
+    
+def closeWindow(main, bundle, input_size, canvas_size, printf):
+    global lower_x
+    global lower_y
+    global upper_x
+    global upper_y
+    main.destroy()
 
     lower_x = int(width_ratio*rectx0)
     upper_x = int(width_ratio*rectx1)
