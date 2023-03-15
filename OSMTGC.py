@@ -420,6 +420,12 @@ def addOSMToTGC(course_json, geopointcloud, osm_result, x_offset=0.0, y_offset=0
             return []
         # Check this shapes bounding box against the limits of the terrain, don't draw outside this bounds
         # Left, Top, Right, Bottom
+        
+        # Skips a way if it has no nodes
+        # OSM files can have ways with attribute "action=deleted" containing no nodes and this will throw an exception if not skipped
+        if len(nds) == 0:
+            continue
+        
         nbb = nodeBoundingBox(nds)
         if nbb[0] < ul_tgc[0] or nbb[1] > ul_tgc[2] or nbb[2] > lr_tgc[0] or nbb[3] < lr_tgc[2]:
             # Off of map, skip
